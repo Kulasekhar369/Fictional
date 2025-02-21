@@ -1,0 +1,30 @@
+pipeline {
+    agent any
+
+    parameters {
+        file(name: 'EXCEL_FILE', description: 'Upload an Excel file')
+    }
+
+    stages {
+        stage('Setup Python Environment') {
+            steps {
+                sh 'python3 -m venv venv && source venv/bin/activate'
+                sh 'pip install pandas openpyxl'
+            }
+        }
+
+        stage('Transform Excel File') {
+            steps {
+                script {
+                    sh 'python3 transform_excel.py "$WORKSPACE/$EXCEL_FILE"'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'transformed_output.xlsx', allowEmptyArchive: false
+        }
+    }
+}
