@@ -2,58 +2,60 @@ import pandas as pd
 import sys
 import re
 
-def load_category_mapping(mapping_file):
-    """Load category mapping from an Excel file."""
+def load_mapping(file_path, sheet_name='Sheet1'):
+    """Loads mappings from an Excel file into a dictionary."""
     try:
-        mapping_df = pd.read_excel(mapping_file, engine="openpyxl")
-        return dict(zip(mapping_df['Keyword'].str.lower(), mapping_df['Category']))
+        mapping_df = pd.read_excel(file_path, sheet_name=sheet_name)
+        mapping_dict = dict(zip(mapping_df['Pattern'], mapping_df.iloc[:, 1]))
+        print(f"Loaded mappings from {file_path}:")
+        print(mapping_dict)
+        return mapping_dict
     except Exception as e:
-        print(f"Error loading category mapping: {e}")
+        print(f"Error loading mapping file: {e}")
         return {}
 
-def extract_circle_name(sprint_name):
-    """Extract circle name from a jumbled sprint name using pattern matching."""
-    # Define known circle names or patterns (these can be extended)
-    known_circles = ['CircleA', 'CircleB', 'CircleC']
-    
-    # Use regex to match known circle names
-    for circle in known_circles:
-        if re.search(fr'\b{circle}\b', sprint_name, re.IGNORECASE):
-            return circle
-    return 'Unknown'
+def extract_from_pattern(text, mapping_dict, default_value='Unknown'):
+    """Extracts a value from text using a mapping dictionary."""
+    for pattern, mapped_value in mapping_dict.items():
+        if re.search(fr'\b{pattern}\b', str(text), re.IGNORECASE):
+            return mapped_value
+    return default_value
 
-def categorize_task(task_name, category_mapping):
-    """Categorize tasks based on keywords in the task name."""
-    for keyword, category in category_mapping.items():
-        if re.search(fr'\b{keyword}\b', task_name, re.IGNORECASE):
-            return category
-    return 'Uncategorized'
-
-def process_jira_data(file_path, mapping_file, output_path):
-    """Main function to process Jira sprint data."""
+def process_sprint_data(file_path, circle_mapping_file, task_mapping_file, output_path):
+    """Processes the Excel file to add 'Circle Name' and 'Task Category' columns."""
     try:
-        # Load the Excel file containing Jira data
-        df = pd.read_excel(file_path, engine="openpyxl")
-        
-        # Load the category mapping from an external file
-        category_mapping = load_category_mapping(mapping_file)
-        
-        # Add 'Circle Name' column by extracting from 'Sprint Name'
-        df['Circle Name'] = df['Sprint Name'].apply(extract_circle_name)
-        
-        # Add 'Category' column by categorizing 'Task Name'
-        df['Category'] = df['Task Name'].apply(lambda x: categorize_task(x, category_mapping))
-        
+        # Load the main data file
+        df = pd.read_excel(file_path)
+
+        # Check required columns
+        if not {'Sprint Name', 'Task Name'}.issubset(df.columns):
+            print("Error: 'Sprint Name' and 'Task Name' columns are required in the Excel file.")
+            return
+
+        # Load mappings
+        circle_mapping = load_mapping(circle_mapping_file)
+        task_mapping = load_mapping(task_mapping_file)
+
+        # Add 'Circle Name' column using 'Sprint Name' and circle mapping
+        df['Circle Name'] = df['Sprint Name'].apply(lambda x: extract_from_pattern(x, circle_mapping))
+
+        # Add 'Task Category' column using 'Task Name' and task mapping
+        df['Task Category'] = df['Task Name'].apply(lambda x: extract_from_pattern(x, task_mapping))
+
+        # Display the first few rows for testing
+        print(df.head())
+
         # Save the transformed data to an output Excel file
         df.to_excel(output_path, index=False)
         print(f"Transformed Excel file saved as: {output_path}")
-    
+
     except Exception as e:
         print(f"Error processing Jira data: {e}")
 
 if __name__ == "__main__":
-    input_file = 
-    mapping_file = "category_mapping.xlsx"  # Mapping file path
-    output_file = "transformed_output.xlsx"  # Output file path
-    
-    process_jira_data(input_file, mapping_file, output_file)
+    input_file = sys.argv[1]          # Input Excel file path
+    circle_mapping_file = sys.argv[2] # Circle mapping file path
+    task_mapping_file = sys.argv[3]   # Task category mapping file path
+    output_file = "sprint_data_transformed.xlsx" # Output file path
+
+    process_sprint_data(input_file, circle_mapping_file, task_mapping_file, output_file)
