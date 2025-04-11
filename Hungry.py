@@ -1,38 +1,18 @@
-import pandas as pd
 import requests
+import pandas as pd
 import sys
 import re
-from io import BytesIO
 
-# Jira credentials (Use environment variables or Jenkins credentials store)
-JIRA_URL = "https://your-jira-instance.com/rest/api/2/"
-JIRA_USERNAME = "your-username"
+# Jira credentials (you should pass these securely from Jenkins)
+JIRA_URL = "https://your-domain.atlassian.net"
+JIRA_EMAIL = "your-email@example.com"
 JIRA_API_TOKEN = "your-api-token"
 
-# Function to fetch sprint report for a given board and sprint ID
-def fetch_sprint_report(board_id: str, sprint_id: str) -> pd.DataFrame:
-    """Fetches the sprint report Excel file from Jira API for a specific board and sprint."""
-    api_url = f"{JIRA_URL}board/{board_id}/sprint/{sprint_id}/report"
-    headers = {"Authorization": f"Basic {JIRA_API_TOKEN}"}
+# JQL API endpoint
+JIRA_SEARCH_API = f"{JIRA_URL}/rest/api/2/search"
 
-    try:
-        response = requests.get(api_url, headers=headers)
-        response.raise_for_status()  # Raise an error for bad responses
-
-        # Read the Excel file from API response
-        file_stream = BytesIO(response.content)
-        df = pd.read_excel(file_stream)
-        df['Board ID'] = board_id  # Add Board ID for reference
-        print(f"Sprint report for Board {board_id}, Sprint {sprint_id} fetched successfully.")
-        return df
-
-    except Exception as e:
-        print(f"Error fetching sprint report for Board {board_id}, Sprint {sprint_id}: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on failure
-
-# Function to load mapping file (circle mapping or task mapping)
+# Load mapping file into a dictionary
 def load_mapping(file_path: str) -> dict:
-    """Loads mappings from a CSV file into a dictionary."""
     try:
         mapping_df = pd.read_csv(file_path)
         return dict(zip(mapping_df['Pattern'], mapping_df['MappedValue']))
@@ -40,60 +20,73 @@ def load_mapping(file_path: str) -> dict:
         print(f"Error loading mapping file {file_path}: {e}")
         return {}
 
-# Function to extract mapped value based on a pattern match
-def extract_from_pattern(text: str, mapping_dict: dict, default_value="Unknown") -> str:
-    """Extracts a value from text using a mapping dictionary."""
+# Extract mapped value using pattern matching
+def extract_from_pattern(text: str, mapping_dict: dict, default="Unknown") -> str:
     for pattern, mapped_value in mapping_dict.items():
         if re.search(fr'\b{pattern}\b', str(text), re.IGNORECASE):
             return mapped_value
-    return default_value
+    return default
 
-# Main processing function for multiple boards
-def process_sprint_data_for_boards(board_sprint_mapping: dict, circle_mapping_file: str, task_mapping_file: str, output_path: str) -> None:
-    """Fetches and processes the Jira sprint reports for multiple boards."""
-    all_sprint_data = []
+# Fetch Jira issues using JQL for a given sprint name
+def fetch_issues_by_sprint(sprint_name: str) -> pd.DataFrame:
+    jql = f'sprint = "{sprint_name}"'
+    headers = {
+        "Authorization": f"Basic {requests.auth._basic_auth_str(JIRA_EMAIL, JIRA_API_TOKEN)}",
+        "Content-Type": "application/json"
+    }
+    params = {
+        "jql": jql,
+        "fields": "key,status,summary,parent"
+    }
 
-    # Step 1: Load mappings
+    response = requests.get(JIRA_SEARCH_API, headers=headers, params=params)
+    response.raise_for_status()
+    issues = response.json()["issues"]
+
+    # Extract required fields
+    data = []
+    for issue in issues:
+        key = issue["key"]
+        status = issue["fields"]["status"]["name"]
+        summary = issue["fields"]["summary"]
+        parent_summary = issue["fields"]["parent"]["fields"]["summary"] if issue["fields"].get("parent") else ""
+        data.append({
+            "Key": key,
+            "Status": status,
+            "Summary": summary,
+            "Parent Summary": parent_summary,
+            "Sprint Name": sprint_name
+        })
+
+    return pd.DataFrame(data)
+
+# Process multiple sprints and apply pattern matching
+def process_sprints(sprint_names, circle_mapping_file, category_mapping_file, output_file):
     circle_mapping = load_mapping(circle_mapping_file)
-    task_mapping = load_mapping(task_mapping_file)
+    category_mapping = load_mapping(category_mapping_file)
 
-    # Step 2: Loop through boards and sprints
-    for board_id, sprint_id in board_sprint_mapping.items():
-        df = fetch_sprint_report(board_id, sprint_id)
-        
-        if df.empty:
-            print(f"Skipping Board {board_id}, Sprint {sprint_id} due to empty data.")
-            continue
+    all_data = []
 
-        # Step 3: Check required columns
-        if not {'Sprint Name', 'Task Name'}.issubset(df.columns):
-            print(f"Error: 'Sprint Name' and 'Task Name' columns are required for Board {board_id}, Sprint {sprint_id}.")
-            continue
+    for sprint in sprint_names:
+        print(f"Processing sprint: {sprint}")
+        df = fetch_issues_by_sprint(sprint)
+        df["Circle"] = df["Parent Summary"].apply(lambda x: extract_from_pattern(x, circle_mapping))
+        df["Category"] = df["Summary"].apply(lambda x: extract_from_pattern(x, category_mapping))
+        all_data.append(df)
 
-        # Step 4: Add 'Circle Name' column based on 'Sprint Name'
-        df['Circle Name'] = df['Sprint Name'].apply(lambda x: extract_from_pattern(x, circle_mapping))
-
-        # Step 5: Add 'Task Category' column based on 'Task Name'
-        df['Task Category'] = df['Task Name'].apply(lambda x: extract_from_pattern(x, task_mapping))
-
-        all_sprint_data.append(df)
-
-    # Step 6: Merge all data into a single DataFrame
-    if all_sprint_data:
-        final_df = pd.concat(all_sprint_data, ignore_index=True)
-        final_df.to_excel(output_path, index=False)
-        print(f"Transformed sprint data for all boards saved as: {output_path}")
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        final_df.to_excel(output_file, index=False)
+        print(f"Data saved to: {output_file}")
     else:
-        print("No valid sprint data was found for any board.")
+        print("No data found for any sprint.")
 
-# Script execution in Jenkins
+# Entry point
 if __name__ == "__main__":
-    board_sprint_mapping_str = sys.argv[1]  # Example: "Board1:Sprint10,Board2:Sprint15"
-    circle_mapping_file = sys.argv[2]  # Path to circle mapping CSV
-    task_mapping_file = sys.argv[3]  # Path to task category mapping CSV
-    output_file = "processed_sprint_data.xlsx"  # Output file
+    sprint_names_arg = sys.argv[1]  # Comma-separated sprint names
+    circle_mapping_file = sys.argv[2]
+    category_mapping_file = sys.argv[3]
+    output_file = "final_sprint_report.xlsx"
 
-    # Convert string input to dictionary {board_id: sprint_id}
-    board_sprint_mapping = dict(item.split(":") for item in board_sprint_mapping_str.split(","))
-
-    process_sprint_data_for_boards(board_sprint_mapping, circle_mapping_file, task_mapping_file, output_file)
+    sprint_names = sprint_names_arg.split(",")
+    process_sprints(sprint_names, circle_mapping_file, category_mapping_file, output_file)
