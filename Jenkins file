@@ -2,29 +2,29 @@ pipeline {
     agent any
 
     parameters {
-        file(name: 'EXCEL_FILE', description: 'Upload an Excel file')
+        string(name: 'SPRINTS', defaultValue: '', description: 'Selected Sprints')
+        string(name: 'TEAMS', defaultValue: '', description: 'Selected Teams')
     }
 
     stages {
-        stage('Setup Python Environment') {
-            steps {
-                sh 'python3 -m venv venv && source venv/bin/activate'
-                sh 'pip install pandas openpyxl'
-            }
-        }
-
-        stage('Transform Excel File') {
+        stage('Process Inputs') {
             steps {
                 script {
-                    sh 'python3 transform_excel.py "$WORKSPACE/$EXCEL_FILE"'
+                    def sprintList = params.SPRINTS.split(',')
+                    def teamList = params.TEAMS.split(',')
+
+                    echo "Sprints: ${sprintList}"
+                    echo "Teams: ${teamList}"
+
+                    // Create sprint-team combinations
+                    sprintList.each { sprint ->
+                        teamList.each { team ->
+                            def combo = "${sprint.trim()} ${team.trim()}"
+                            echo "Combo: ${combo}"
+                        }
+                    }
                 }
             }
-        }
-    }
-
-    post {
-        always {
-            archiveArtifacts artifacts: 'transformed_output.xlsx', allowEmptyArchive: false
         }
     }
 }
